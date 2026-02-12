@@ -2,7 +2,7 @@
   "name": "vite_react_shadcn_ts",
   "private": true,
   "version": "0.0.0",
-  "homepage": "https://VarunK-21.github.io/Insight-Gen-Frontend",
+  "homepage": "https://VarunK-21.github.io/Insight-Gen",
   "type": "module",
   "scripts": {
     "dev": "vite",
