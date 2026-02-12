@@ -4,7 +4,16 @@ import { KeyRound, LogOut, User, BarChart3, UploadCloud, Trash2, Shield } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getCurrentUser, clearUser, updatePassword, UserProfile } from "@/lib/auth";
-import { clearStoredApiKey, clearStoredModel, getStoredApiKey, getStoredModel, setStoredApiKey, setStoredModel } from "@/lib/api";
+import {
+  clearStoredApiKey,
+  clearStoredModel,
+  getStoredApiKey,
+  getStoredModel,
+  getStrictMode,
+  setStoredApiKey,
+  setStoredModel,
+  setStrictMode,
+} from "@/lib/api";
 import { getSavedAnalyses } from "@/pages/History";
 import { toast } from "sonner";
 
@@ -18,10 +27,12 @@ const Profile = () => {
   const [currentPassword, setCurrentPassword] = useState("");
   const [nextPassword, setNextPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [strictMode, setStrictModeState] = useState(getStrictMode());
 
   useEffect(() => {
     setUser(getCurrentUser());
     setHasKey(!!getStoredApiKey());
+    setStrictModeState(getStrictMode());
   }, []);
 
   const analyses = useMemo(() => getSavedAnalyses(user?.email || null), [user?.email]);
@@ -90,10 +101,26 @@ const Profile = () => {
   const handleClearCache = () => {
     if (!user) return;
     localStorage.removeItem(`insightgen_saved_analyses_${user.email.toLowerCase()}`);
+    const cachePrefixes = ["insight_gen_analysis_cache_v1:", "insight_gen_reco_cache_v1:"];
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key && cachePrefixes.some((prefix) => key.startsWith(prefix))) {
+        localStorage.removeItem(key);
+      }
+    }
     clearStoredApiKey();
     clearStoredModel();
+    setStrictMode(false);
+    setStrictModeState(false);
     setHasKey(false);
     toast.success("Local cache cleared.");
+  };
+
+  const handleToggleStrictMode = () => {
+    const next = !strictMode;
+    setStrictMode(next);
+    setStrictModeState(next);
+    toast.success(`Strict mode ${next ? "enabled" : "disabled"}.`);
   };
 
   const handlePasswordChange = () => {
@@ -265,6 +292,19 @@ const Profile = () => {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">Current model: {getStoredModel()}</p>
+      </div>
+
+      <div className="glass-card rounded-2xl p-8 space-y-4">
+        <div className="flex items-center gap-2">
+          <Shield className="w-5 h-5 text-primary" />
+          <h2 className="font-display text-xl font-semibold">Strict Analysis Mode</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Reduces hallucination risk using lower temperature and stricter output checks.
+        </p>
+        <Button variant={strictMode ? "default" : "outline"} onClick={handleToggleStrictMode}>
+          {strictMode ? "Strict Mode: ON" : "Strict Mode: OFF"}
+        </Button>
       </div>
 
       <div className="glass-card rounded-2xl p-8 space-y-4">

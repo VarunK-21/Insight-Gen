@@ -3,6 +3,9 @@ import { cleanAndPrepareData, CleaningReport, ColumnStats } from "@/lib/dataClea
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const API_KEY_STORAGE = "insight_weaver_openai_key";
 const MODEL_STORAGE = "insight_weaver_openai_model";
+const STRICT_MODE_STORAGE = "insight_weaver_strict_mode";
+const ANALYSIS_CACHE_PREFIX = "insight_gen_analysis_cache_v1";
+const RECOMMENDATION_CACHE_PREFIX = "insight_gen_reco_cache_v1";
 const DEFAULT_MODEL = "gpt-5-chat-latest";
 
 interface CustomPersona {
@@ -39,6 +42,59 @@ export interface AnalysisResult {
   warning?: string;
   cleaningReport: CleaningReport;
   columnStats: Record<string, ColumnStats>;
+}
+
+export interface RecommendationResult {
+  persona: string;
+  kpis: string[];
+}
+
+function fnv1aHash(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function canonicalizeData(data: string[][]): string {
+  return data
+    .map((row) => row.map((cell) => String(cell ?? "").trim()).join("\u001f"))
+    .join("\u001e");
+}
+
+export function getDatasetHash(data: string[][]): string {
+  return fnv1aHash(canonicalizeData(data));
+}
+
+function readCache<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache<T>(key: string, value: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore localStorage quota errors and continue without cache.
+  }
+}
+
+function inferLikelyPersonaFromHeaders(headers: string[]): string | null {
+  const joined = headers.join(" ").toLowerCase();
+  if (/(revenue|profit|margin|expense|invoice|ledger|balance|cost)/.test(joined)) return "accountant";
+  if (/(user|session|retention|feature|conversion|churn|engagement)/.test(joined)) return "product_manager";
+  if (/(regulation|legal|contract|claim|penalty|compliance|policy)/.test(joined)) return "lawyer";
+  if (/(latency|uptime|throughput|error|incident|cpu|memory|system)/.test(joined)) return "engineer";
+  if (/(experiment|variance|correlation|model|score|prediction)/.test(joined)) return "data_scientist";
+  if (/(region|sales|customer|market|segment|campaign)/.test(joined)) return "business";
+  return null;
 }
 
 const PERSONA_PROMPTS: Record<string, string> = {
@@ -136,6 +192,14 @@ export function clearStoredModel(): void {
   localStorage.removeItem(MODEL_STORAGE);
 }
 
+export function getStrictMode(): boolean {
+  return localStorage.getItem(STRICT_MODE_STORAGE) === "true";
+}
+
+export function setStrictMode(enabled: boolean): void {
+  localStorage.setItem(STRICT_MODE_STORAGE, enabled ? "true" : "false");
+}
+
 function requestApiKey(): string {
   const key = window.prompt("Enter your OpenAI API key (stored locally in this browser):");
   if (!key) throw new Error("Missing OpenAI API key.");
@@ -156,6 +220,7 @@ export async function analyzeDataset(request: AnalysisRequest): Promise<Analysis
   const headers = cleanedData[0];
   const rows = cleanedData.slice(1);
   const sampleRows = rows.slice(0, 20);
+  const datasetHash = getDatasetHash(cleanedData);
 
   let personaPrompt = PERSONA_PROMPTS[request.persona] || PERSONA_PROMPTS.common;
   if (request.persona === "custom" && request.customPersona) {
@@ -252,6 +317,19 @@ ${dataSummary}
 
 Respond with ONLY the JSON object, no other text.`;
 
+  const strictMode = getStrictMode();
+  const customFingerprint =
+    request.persona === "custom" && request.customPersona
+      ? fnv1aHash(
+          `${request.customPersona.name}|${request.customPersona.description}|${request.customPersona.analyticalFocus}|${request.customPersona.customPrompt || ""}`
+        )
+      : "none";
+  const cacheKey = `${ANALYSIS_CACHE_PREFIX}:${datasetHash}:${request.persona}:${customFingerprint}`;
+  const cached = readCache<AnalysisResult>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const response = await fetch(OPENAI_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -264,7 +342,7 @@ Respond with ONLY the JSON object, no other text.`;
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      temperature: 0.7,
+      temperature: strictMode ? 0.2 : 0.7,
       max_completion_tokens: 4000,
     }),
   });
@@ -341,6 +419,20 @@ Respond with ONLY the JSON object, no other text.`;
     parsed.dashboardViews = [];
   }
 
+  // Strict schema checks: keep only known columns and valid chart types.
+  const headerSet = new Set(headers.map((h) => (h || "").toLowerCase()));
+  parsed.dashboardViews = parsed.dashboardViews
+    .filter((view: any) => view && typeof view === "object")
+    .map((view: any) => ({
+      ...view,
+      variables: Array.isArray(view.variables)
+        ? view.variables.filter((v: string) => headerSet.has(String(v).toLowerCase()))
+        : [],
+      chartType: normalizeChartType(view.chartType),
+      aggregation: normalizeAggregation(view.aggregation),
+    }))
+    .filter((view: any) => view.variables.length >= 1);
+
   if (parsed.dashboardViews.length < 4) {
     const existing = new Set(
       parsed.dashboardViews.map((view: any) => `${view.chartType}:${view.variables?.join("|")}`)
@@ -357,15 +449,17 @@ Respond with ONLY the JSON object, no other text.`;
   parsed.cleaningReport = report;
   parsed.columnStats = columnStats;
   
-  // Normalize chartType to match expected types
-  if (parsed.dashboardViews) {
-    parsed.dashboardViews = parsed.dashboardViews.map((view: any) => ({
-      ...view,
-      chartType: normalizeChartType(view.chartType)
-    }));
+  // Post-check pass for unsupported text claims.
+  const hasTimeColumn = headers.some((h) => /date|month|year|quarter|week|day|time/i.test(h || ""));
+  if (!hasTimeColumn && Array.isArray(parsed.insights)) {
+    parsed.insights = parsed.insights.filter(
+      (item: string) => !/month-over-month|year-over-year|over time|temporal/i.test(String(item))
+    );
   }
   
-  return parsed as AnalysisResult;
+  const finalResult = parsed as AnalysisResult;
+  writeCache(cacheKey, finalResult);
+  return finalResult;
 }
 
 function normalizeChartType(type: string): 'line' | 'bar' | 'scatter' | 'table' | 'pie' {
@@ -379,6 +473,85 @@ function normalizeChartType(type: string): 'line' | 'bar' | 'scatter' | 'table' 
   return 'bar';
 }
 
+function normalizeAggregation(agg?: string): "sum" | "avg" | "count" {
+  const normalized = (agg || "sum").toLowerCase();
+  if (normalized === "avg" || normalized === "average" || normalized === "mean") return "avg";
+  if (normalized === "count" || normalized === "distribution" || normalized === "frequency") return "count";
+  return "sum";
+}
+
 export function clearStoredApiKey(): void {
   localStorage.removeItem(API_KEY_STORAGE);
+}
+
+export async function recommendPersonaAndKpis(data: string[][]): Promise<RecommendationResult> {
+  const { cleanedData, report, columnStats } = cleanAndPrepareData(data);
+  const headers = cleanedData[0] || [];
+  const datasetHash = getDatasetHash(cleanedData);
+  const recoCacheKey = `${RECOMMENDATION_CACHE_PREFIX}:${datasetHash}`;
+  const cachedRecommendation = readCache<RecommendationResult>(recoCacheKey);
+  if (cachedRecommendation?.persona && cachedRecommendation?.kpis?.length) {
+    return cachedRecommendation;
+  }
+
+  const heuristicPersona = inferLikelyPersonaFromHeaders(headers);
+  const summary = {
+    headers,
+    rows: report.cleanedRows,
+    numericColumns: Object.entries(columnStats).filter(([, c]) => c.type === "numeric").map(([name]) => name),
+    categoricalColumns: Object.entries(columnStats).filter(([, c]) => c.type !== "numeric").map(([name]) => name),
+  };
+
+  const fallbackPersona = heuristicPersona || (summary.numericColumns.length >= 2 ? "data_scientist" : "business");
+  const fallbackKpis = [
+    `Total rows: ${report.cleanedRows.toLocaleString()}`,
+    `Columns analyzed: ${headers.length}`,
+    `Duplicates removed: ${report.duplicatesRemoved}`,
+    `Null values handled: ${report.nullsHandled}`,
+  ];
+
+  try {
+    const response = await fetch(OPENAI_ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${getApiKey()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: getStoredModel(),
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a dataset triage assistant. Pick the single most appropriate persona for this dataset based on column semantics and business context, then recommend 4 KPI cards. Output JSON only: { persona: string, kpis: string[] }. Personas: common, accountant, engineer, policy, lawyer, business, data_scientist, product_manager. You must choose from only these personas.",
+          },
+          {
+            role: "user",
+            content: `Dataset summary: ${JSON.stringify(summary)}. Heuristic likely persona: ${heuristicPersona || "none"}. Use the heuristic only if dataset context supports it.`,
+          },
+        ],
+        temperature: getStrictMode() ? 0.1 : 0.3,
+        max_completion_tokens: 300,
+      }),
+    });
+
+    if (!response.ok) throw new Error("recommendation failed");
+    const result = await response.json();
+    const content = result?.choices?.[0]?.message?.content ?? "";
+    let cleaned = String(content).trim();
+    if (cleaned.startsWith("```json")) cleaned = cleaned.slice(7);
+    else if (cleaned.startsWith("```")) cleaned = cleaned.slice(3);
+    if (cleaned.endsWith("```")) cleaned = cleaned.slice(0, -3);
+    cleaned = cleaned.trim();
+    const parsed = JSON.parse(cleaned || "{}");
+    const persona = String(parsed.persona || fallbackPersona);
+    const kpis = Array.isArray(parsed.kpis) ? parsed.kpis.slice(0, 4).map(String) : fallbackKpis;
+    const resultPayload = { persona, kpis: kpis.length ? kpis : fallbackKpis };
+    writeCache(recoCacheKey, resultPayload);
+    return resultPayload;
+  } catch {
+    const fallbackPayload = { persona: fallbackPersona, kpis: fallbackKpis };
+    writeCache(recoCacheKey, fallbackPayload);
+    return fallbackPayload;
+  }
 }

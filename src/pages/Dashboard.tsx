@@ -7,11 +7,11 @@ import { useDatasetAnalysis } from "@/hooks/useDatasetAnalysis";
 import { AnalysisDashboard } from "@/components/dashboard/AnalysisDashboard";
 import { AnalysisLoadingState } from "@/components/dashboard/AnalysisLoadingState";
 import { Button } from "@/components/ui/button";
-import { Sparkles, ArrowRight, Brain, RotateCcw, Upload, Bookmark, Check, Lock } from "lucide-react";
+import { Sparkles, ArrowRight, Brain, RotateCcw, Upload, Bookmark, Check, Lock, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { saveAnalysis } from "@/pages/History";
 import { getCurrentUser } from "@/lib/auth";
-import { getStoredApiKey } from "@/lib/api";
+import { getStoredApiKey, recommendPersonaAndKpis } from "@/lib/api";
 
 const Dashboard = () => {
   const [searchParams] = useSearchParams();
@@ -21,6 +21,8 @@ const Dashboard = () => {
   const [persona, setPersona] = useState<PersonaType | null>(null);
   const [customPersona, setCustomPersona] = useState<CustomPersonaData | undefined>(undefined);
   const [isSaved, setIsSaved] = useState(false);
+  const [recommendedKpis, setRecommendedKpis] = useState<string[]>([]);
+  const [isRecommending, setIsRecommending] = useState(false);
   
   const { isAnalyzing, insights, analyzeDataset, clearInsights, setInsights } = useDatasetAnalysis();
   const [user, setUser] = useState(getCurrentUser());
@@ -57,7 +59,18 @@ const Dashboard = () => {
     setData(parsedData);
     clearInsights();
     setIsSaved(false);
+    setRecommendedKpis([]);
     toast.success("Dataset loaded successfully!");
+  }, [clearInsights]);
+
+  const handleSampleSelect = useCallback((name: string, sampleData: string[][]) => {
+    const sampleFile = new File(["sample"], name, { type: "text/csv" });
+    setFile(sampleFile);
+    setData(sampleData);
+    clearInsights();
+    setIsSaved(false);
+    setRecommendedKpis([]);
+    toast.success("Sample dataset loaded.");
   }, [clearInsights]);
 
   const handleClearFile = useCallback(() => {
@@ -75,6 +88,23 @@ const Dashboard = () => {
       setCustomPersona(undefined);
     }
   }, []);
+
+  const handleAutoRecommend = useCallback(async () => {
+    if (!data) return;
+    setIsRecommending(true);
+    try {
+      const recommendation = await recommendPersonaAndKpis(data);
+      const suggestedPersona = recommendation.persona as PersonaType;
+      setPersona(suggestedPersona);
+      if (suggestedPersona !== "custom") setCustomPersona(undefined);
+      setRecommendedKpis(recommendation.kpis || []);
+      toast.success(`Suggested persona: ${suggestedPersona}`);
+    } catch {
+      toast.error("Could not auto-recommend persona and KPI.");
+    } finally {
+      setIsRecommending(false);
+    }
+  }, [data]);
 
   const handleAnalyze = useCallback(async () => {
     if (!user) {
@@ -353,6 +383,7 @@ const Dashboard = () => {
             
             <FileUpload 
               onFileSelect={handleFileSelect}
+              onSampleSelect={handleSampleSelect}
               selectedFile={file}
               onClear={handleClearFile}
             />
@@ -382,6 +413,24 @@ const Dashboard = () => {
                 selected={persona}
                 onSelect={handlePersonaSelect}
               />
+              <div className="mt-4 pt-4 border-t border-border flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  Optional: let AI recommend persona and dashboard KPIs.
+                </p>
+                <Button variant="outline" onClick={handleAutoRecommend} disabled={isRecommending} className="gap-2">
+                  <Wand2 className="w-4 h-4" />
+                  {isRecommending ? "Recommending..." : "Auto-select Persona + KPI"}
+                </Button>
+              </div>
+              {recommendedKpis.length > 0 && (
+                <div className="mt-4 grid sm:grid-cols-2 gap-2">
+                  {recommendedKpis.map((kpi, idx) => (
+                    <div key={idx} className="px-3 py-2 rounded-lg bg-secondary/40 border border-border text-sm text-foreground">
+                      {kpi}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           

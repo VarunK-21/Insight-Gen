@@ -599,6 +599,31 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
       .map((view, idx) => ({ view, idx, chartData: generateChartData(view) }))
       .filter(item => item.chartData && item.chartData.length >= 2);
 
+    const pickFinalViews = (items: typeof hydrated, limit = 4) => {
+      if (items.length <= limit) return items;
+
+      // Prefer at least one pie chart when dataset supports it.
+      const pieItem = items.find((item) => item.view.chartType === "pie");
+      const selected: typeof items = [];
+      const seen = new Set<string>();
+
+      if (pieItem) {
+        const pieKey = `${pieItem.view.chartType}:${pieItem.view.variables?.join("|")}`;
+        selected.push(pieItem);
+        seen.add(pieKey);
+      }
+
+      for (const item of items) {
+        const key = `${item.view.chartType}:${item.view.variables?.join("|")}`;
+        if (seen.has(key)) continue;
+        selected.push(item);
+        seen.add(key);
+        if (selected.length >= limit) break;
+      }
+
+      return selected.slice(0, limit);
+    };
+
     if (hydrated.length < 4) {
       const fallbackHydrated = fallbackViews
         .map((view, idx) => ({ view, idx: idx + 1000, chartData: generateChartData(view) }))
@@ -614,10 +639,10 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
         }
         if (unique.length >= 4) break;
       }
-      return unique;
+      return pickFinalViews(unique, 4);
     }
 
-    return hydrated.slice(0, 4);
+    return pickFinalViews(hydrated, 4);
   }, [dashboardViews, generateChartData, fallbackViews]);
 
   const selectedViewItem = expandedChart !== null 
