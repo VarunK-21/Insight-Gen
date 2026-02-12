@@ -1,9 +1,18 @@
 import { ReactNode } from "react";
-import { Link, useLocation } from "react-router-dom";
-import { Home, LayoutDashboard, Bookmark, BookOpen, User, Menu, X, Zap } from "lucide-react";
-import { useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Home, LayoutDashboard, Bookmark, BookOpen, User, Menu, X, Zap, LogIn, LogOut } from "lucide-react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { clearUser, getCurrentUser, UserProfile } from "@/lib/auth";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface LayoutProps {
   children: ReactNode;
@@ -19,7 +28,29 @@ const navItems = [
 
 export const Layout = ({ children }: LayoutProps) => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [user, setUser] = useState<UserProfile | null>(null);
+
+  useEffect(() => {
+    setUser(getCurrentUser());
+  }, [location.pathname]);
+
+  const handleLogout = () => {
+    clearUser();
+    setUser(null);
+    navigate("/login");
+  };
+
+  const initials = user?.name
+    ? user.name
+        .split(" ")
+        .filter(Boolean)
+        .map((part) => part[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : "U";
 
   return (
     <div className="min-h-screen bg-background">
@@ -67,15 +98,64 @@ export const Layout = ({ children }: LayoutProps) => {
               })}
             </div>
 
-            {/* Mobile Menu Button */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="md:hidden"
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-            >
-              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-            </Button>
+            <div className="flex items-center gap-3">
+              {/* Profile Section */}
+              <div className="hidden md:flex items-center gap-2">
+                {user ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" className="gap-2 px-2">
+                        <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-semibold">
+                          {initials}
+                        </div>
+                        <span className="hidden lg:inline text-sm font-medium">{user.name}</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuLabel className="space-y-1">
+                        <p className="text-sm font-semibold text-foreground">{user.name}</p>
+                        <p className="text-xs text-muted-foreground">{user.email}</p>
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem asChild>
+                        <Link to="/profile" className="flex items-center gap-2">
+                          <User className="w-4 h-4" />
+                          Profile
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem asChild>
+                        <Link to="/history" className="flex items-center gap-2">
+                          <Bookmark className="w-4 h-4" />
+                          Saved analyses
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={handleLogout} className="gap-2">
+                        <LogOut className="w-4 h-4" />
+                        Sign out
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : (
+                  <Button asChild variant="outline" size="sm" className="gap-2">
+                    <Link to="/login">
+                      <LogIn className="w-4 h-4" />
+                      Login
+                    </Link>
+                  </Button>
+                )}
+              </div>
+
+              {/* Mobile Menu Button */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="md:hidden"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              >
+                {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -102,6 +182,26 @@ export const Layout = ({ children }: LayoutProps) => {
                   </Link>
                 );
               })}
+              <div className="border-t border-border/50 pt-3 mt-3">
+                {user ? (
+                  <div className="flex items-center justify-between px-4 py-2">
+                    <Link to="/profile" onClick={() => setMobileMenuOpen(false)}>
+                      <p className="text-sm font-semibold text-foreground">{user.name}</p>
+                      <p className="text-xs text-muted-foreground">{user.email}</p>
+                    </Link>
+                    <Button variant="ghost" size="icon" onClick={handleLogout}>
+                      <LogOut className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Button asChild variant="outline" className="w-full">
+                    <Link to="/login" onClick={() => setMobileMenuOpen(false)}>
+                      <LogIn className="w-4 h-4 mr-2" />
+                      Login
+                    </Link>
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         )}

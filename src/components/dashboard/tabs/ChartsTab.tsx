@@ -15,6 +15,8 @@ interface DashboardView {
   chartType: 'line' | 'bar' | 'scatter' | 'table' | 'pie' | 'area' | 'radar';
   variables: string[];
   aggregation?: string;
+  xAxisLabel?: string;
+  yAxisLabel?: string;
 }
 
 interface ChartsTabProps {
@@ -59,6 +61,13 @@ const formatValue = (value: number): string => {
   return value.toLocaleString();
 };
 
+const normalizeAggregation = (value?: string): "sum" | "avg" | "count" => {
+  const normalized = (value || "sum").toLowerCase();
+  if (normalized === "avg" || normalized === "average" || normalized === "mean") return "avg";
+  if (normalized === "count" || normalized === "distribution" || normalized === "frequency") return "count";
+  return "sum";
+};
+
 export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
   const [expandedChart, setExpandedChart] = useState<number | null>(null);
   const [chartsReady, setChartsReady] = useState(false);
@@ -75,8 +84,22 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
   const generateChartData = useMemo(() => (view: DashboardView) => {
     if (!headers.length || !rows.length) return null;
 
+    const isNumericColumn = (idx: number) => {
+      const vals = rows.slice(0, 25).map(r => r[idx]).filter(Boolean);
+      if (!vals.length) return false;
+      const numericCount = vals.filter(v => !isNaN(parseFloat(v.toString().replace(/[,$%]/g, '')))).length;
+      return numericCount >= vals.length * 0.6;
+    };
+
+    const isTextColumn = (idx: number) => {
+      const vals = rows.slice(0, 25).map(r => r[idx]).filter(Boolean);
+      if (!vals.length) return false;
+      const textCount = vals.filter(v => v && isNaN(parseFloat(v.toString().replace(/[,$%]/g, '')))).length;
+      return textCount >= vals.length * 0.6;
+    };
+
     // Find column indices for the variables
-    const varIndices = view.variables.map(v => {
+    const varMatches = view.variables.map(v => {
       let idx = headers.findIndex(h => h?.toLowerCase() === v?.toLowerCase());
       if (idx === -1) {
         idx = headers.findIndex(h => 
@@ -84,12 +107,21 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
           v?.toLowerCase()?.includes(h?.toLowerCase())
         );
       }
-      return idx;
-    }).filter(i => i !== -1);
+      if (idx === -1) return null;
+      return { idx, isNumeric: isNumericColumn(idx), isText: isTextColumn(idx) };
+    }).filter(Boolean) as Array<{ idx: number; isNumeric: boolean; isText: boolean }>;
 
     // Find fallback columns if no matches
-    let labelIdx = varIndices[0] ?? -1;
-    let valueIdx = varIndices[1] ?? -1;
+    let labelIdx = varMatches.find(v => v.isText)?.idx ?? -1;
+    let valueIdx = varMatches.find(v => v.isNumeric)?.idx ?? -1;
+
+    if (labelIdx === -1 && varMatches[0]) {
+      labelIdx = varMatches[0].idx;
+    }
+
+    if (valueIdx === -1 && varMatches[1]) {
+      valueIdx = varMatches[1].idx;
+    }
 
     if (labelIdx === -1) {
       // Find first text column
@@ -104,8 +136,7 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
       // Find first numeric column that isn't the label
       valueIdx = headers.findIndex((_, idx) => {
         if (idx === labelIdx) return false;
-        const vals = rows.slice(0, 20).map(r => r[idx]).filter(Boolean);
-        return vals.length > 0 && vals.every(v => !isNaN(parseFloat(v.toString().replace(/[,$%]/g, ''))));
+        return isNumericColumn(idx);
       });
       if (valueIdx === -1) valueIdx = labelIdx === 0 ? Math.min(1, headers.length - 1) : 0;
     }
@@ -118,6 +149,8 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
     // Aggregate data - filter out invalid labels early
     const aggregated: Record<string, { sum: number; count: number; values: number[] }> = {};
     
+    const aggregation = normalizeAggregation(view.aggregation);
+
     sampledRows.forEach(row => {
       const rawLabel = (row[labelIdx] || '').toString().trim();
       const label = cleanLabel(rawLabel);
@@ -125,13 +158,18 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
       // Skip invalid labels
       if (!label) return;
       
-      const rawVal = row[valueIdx] || '0';
-      const val = parseFloat(rawVal.toString().replace(/[,$%]/g, ''));
-      
       if (!aggregated[label]) {
         aggregated[label] = { sum: 0, count: 0, values: [] };
       }
-      
+
+      // For count charts, count rows directly and avoid numeric conversion noise.
+      if (aggregation === "count") {
+        aggregated[label].count++;
+        return;
+      }
+
+      const rawVal = row[valueIdx] || '0';
+      const val = parseFloat(rawVal.toString().replace(/[,$%]/g, ''));
       if (!isNaN(val) && isFinite(val)) {
         aggregated[label].sum += val;
         aggregated[label].count++;
@@ -143,7 +181,7 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
       .filter(([name]) => name && name.length > 0) // Extra filter for valid names
       .map(([name, d]) => {
         let value: number;
-        switch (view.aggregation) {
+        switch (aggregation) {
           case 'avg':
             value = d.count > 0 ? Math.round(d.sum / d.count * 100) / 100 : 0;
             break;
@@ -162,11 +200,45 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
           count: d.count,
         };
       })
-      .filter(d => d.value !== 0 && isFinite(d.value) && d.name)
-      .sort((a, b) => b.value - a.value)
+      .filter(d => isFinite(d.value) && d.name)
       .slice(0, 10); // Limit to 10 items for cleaner charts
 
+    if (view.chartType === "bar" || view.chartType === "pie") {
+      result.sort((a, b) => b.value - a.value);
+    }
+
     return result.length >= 2 ? result : null; // Require at least 2 data points
+  }, [headers, rows]);
+
+  const fallbackViews = useMemo(() => {
+    const numericIdxs = headers
+      .map((name, idx) => {
+        const vals = rows.slice(0, 25).map(r => r[idx]).filter(Boolean);
+        const numericCount = vals.filter(v => !isNaN(parseFloat(v.toString().replace(/[,$%]/g, '')))).length;
+        return numericCount > vals.length * 0.6 ? idx : -1;
+      })
+      .filter(idx => idx >= 0);
+
+    const textIdxs = headers
+      .map((name, idx) => {
+        const vals = rows.slice(0, 25).map(r => r[idx]).filter(Boolean);
+        const textCount = vals.filter(v => v && isNaN(parseFloat(v.toString().replace(/[,$%]/g, '')))).length;
+        return textCount > vals.length * 0.6 ? idx : -1;
+      })
+      .filter(idx => idx >= 0);
+
+    const labelIdx = textIdxs[0] ?? 0;
+    const valueIdx = numericIdxs.find(idx => idx !== labelIdx) ?? (labelIdx === 0 ? 1 : 0);
+
+    const label = headers[labelIdx] || "Category";
+    const value = headers[valueIdx] || "Value";
+
+    return [
+      { title: `${value} by ${label}`, purpose: "Compare totals by category", chartType: "bar", variables: [label, value], aggregation: "sum" },
+      { title: `${value} trend by ${label}`, purpose: "See changes across categories", chartType: "line", variables: [label, value], aggregation: "avg" },
+      { title: `${value} share by ${label}`, purpose: "Show proportional contribution", chartType: "pie", variables: [label, value], aggregation: "sum" },
+      { title: `${label} vs ${value}`, purpose: "Tabular comparison", chartType: "table", variables: [label, value], aggregation: "sum" },
+    ] as DashboardView[];
   }, [headers, rows]);
 
   const renderChart = (view: DashboardView, chartData: any[] | null, isExpanded = false) => {
@@ -187,8 +259,14 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
     const axisStyle = { fill: 'hsl(215, 20%, 60%)', fontSize: 11 };
     
     // Extract meaningful axis labels from view
-    const xAxisLabel = view.variables[0] || 'Category';
-    const yAxisLabel = view.aggregation === 'count' ? 'Count' : view.aggregation === 'avg' ? 'Average Value' : 'Value';
+    const xAxisLabel = view.xAxisLabel || view.variables[0] || 'Category';
+    const valueLabel = view.yAxisLabel || view.variables[1] || 'Value';
+    const aggregation = normalizeAggregation(view.aggregation);
+    const yAxisLabel = aggregation === 'count'
+      ? 'Count'
+      : aggregation === 'avg'
+        ? valueLabel.toLowerCase().startsWith("average ") ? valueLabel : `Average ${valueLabel}`
+        : valueLabel.toLowerCase().startsWith("total ") ? valueLabel : `Total ${valueLabel}`;
 
     // Custom tooltip formatter with context
     const formatTooltipValue = (value: number, name: string) => {
@@ -505,10 +583,42 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
 
   // Pre-compute chart data to filter out views with no valid data
   const viewsWithData = useMemo(() => {
-    return dashboardViews
+    const combined: DashboardView[] = [...dashboardViews];
+    if (combined.length < 4) {
+      fallbackViews.forEach((view) => {
+        const exists = combined.some(
+          (existing) =>
+            existing.chartType === view.chartType &&
+            existing.variables?.join("|") === view.variables?.join("|")
+        );
+        if (!exists) combined.push(view);
+      });
+    }
+
+    const hydrated = combined
       .map((view, idx) => ({ view, idx, chartData: generateChartData(view) }))
       .filter(item => item.chartData && item.chartData.length >= 2);
-  }, [dashboardViews, generateChartData]);
+
+    if (hydrated.length < 4) {
+      const fallbackHydrated = fallbackViews
+        .map((view, idx) => ({ view, idx: idx + 1000, chartData: generateChartData(view) }))
+        .filter(item => item.chartData && item.chartData.length >= 2);
+      const merged = [...hydrated, ...fallbackHydrated];
+      const unique: typeof merged = [];
+      const seen = new Set<string>();
+      for (const item of merged) {
+        const key = `${item.view.chartType}:${item.view.variables?.join("|")}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          unique.push(item);
+        }
+        if (unique.length >= 4) break;
+      }
+      return unique;
+    }
+
+    return hydrated.slice(0, 4);
+  }, [dashboardViews, generateChartData, fallbackViews]);
 
   const selectedViewItem = expandedChart !== null 
     ? viewsWithData.find(v => v.idx === expandedChart) 
@@ -572,7 +682,7 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
                     </span>
                     {view.aggregation && view.aggregation !== 'none' && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/20 text-accent uppercase flex-shrink-0">
-                        {view.aggregation}
+                        {normalizeAggregation(view.aggregation)}
                       </span>
                     )}
                   </div>

@@ -92,7 +92,7 @@ const About = () => {
               The Tech
             </h3>
             <p className="text-muted-foreground leading-relaxed">
-              Built with React, TypeScript, and powered by Google's Gemini AI. 
+              Built with React, TypeScript, and powered by OpenAI models. 
               InsightGen combines modern web technologies with cutting-edge 
               artificial intelligence to deliver intelligent data analysis.
             </p>

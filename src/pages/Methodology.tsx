@@ -14,7 +14,7 @@ const steps = [
   {
     icon: Brain,
     title: "AI Analysis",
-    description: "Our advanced AI model analyzes your data through the selected persona's perspective, identifying patterns, anomalies, and key insights.",
+    description: "Our advanced OpenAI models analyze your data through the selected persona's perspective, identifying patterns, anomalies, and key insights.",
   },
   {
     icon: BarChart3,
@@ -161,7 +161,7 @@ const Methodology = () => {
               Powered by Advanced AI
             </h2>
             <p className="text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-              Our system leverages Google's Gemini AI model to provide nuanced, context-aware analysis 
+              Our system leverages OpenAI models to provide nuanced, context-aware analysis 
               of your datasets. The AI understands the unique perspective of each persona and tailors 
               its insights accordingly, ensuring you receive relevant and actionable information.
             </p>

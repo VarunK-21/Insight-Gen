@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { FileUpload } from "@/components/FileUpload";
 import { PersonaSelector, PersonaType, CustomPersonaData } from "@/components/PersonaSelector";
 import { DataPreview } from "@/components/DataPreview";
@@ -7,12 +7,15 @@ import { useDatasetAnalysis } from "@/hooks/useDatasetAnalysis";
 import { AnalysisDashboard } from "@/components/dashboard/AnalysisDashboard";
 import { AnalysisLoadingState } from "@/components/dashboard/AnalysisLoadingState";
 import { Button } from "@/components/ui/button";
-import { Sparkles, ArrowRight, Brain, RotateCcw, Upload, Bookmark, Check } from "lucide-react";
+import { Sparkles, ArrowRight, Brain, RotateCcw, Upload, Bookmark, Check, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { saveAnalysis } from "@/pages/History";
+import { getCurrentUser } from "@/lib/auth";
+import { getStoredApiKey } from "@/lib/api";
 
 const Dashboard = () => {
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const [file, setFile] = useState<File | null>(null);
   const [data, setData] = useState<string[][] | null>(null);
   const [persona, setPersona] = useState<PersonaType | null>(null);
@@ -20,6 +23,13 @@ const Dashboard = () => {
   const [isSaved, setIsSaved] = useState(false);
   
   const { isAnalyzing, insights, analyzeDataset, clearInsights, setInsights } = useDatasetAnalysis();
+  const [user, setUser] = useState(getCurrentUser());
+  const [hasApiKey, setHasApiKey] = useState(!!getStoredApiKey());
+
+  useEffect(() => {
+    setUser(getCurrentUser());
+    setHasApiKey(!!getStoredApiKey());
+  }, [location.pathname]);
 
   // Handle viewing saved analysis
   useEffect(() => {
@@ -67,6 +77,14 @@ const Dashboard = () => {
   }, []);
 
   const handleAnalyze = useCallback(async () => {
+    if (!user) {
+      toast.error("Please sign in to analyze datasets.");
+      return;
+    }
+    if (!hasApiKey) {
+      toast.error("Please add your OpenAI API key in your profile.");
+      return;
+    }
     if (!data || !persona) return;
     
     // Validate custom persona if selected
@@ -77,7 +95,7 @@ const Dashboard = () => {
     
     setIsSaved(false);
     await analyzeDataset(data, persona, customPersona);
-  }, [data, persona, customPersona, analyzeDataset]);
+  }, [data, persona, customPersona, analyzeDataset, user, hasApiKey]);
 
   const handleNewAnalysis = useCallback(() => {
     setFile(null);
@@ -89,9 +107,16 @@ const Dashboard = () => {
   }, [clearInsights]);
 
   const handleSaveAnalysis = useCallback(() => {
-    if (!insights || !data || !file || !persona) return;
+    if (!user) {
+      toast.error("Please sign in to save analyses.");
+      return;
+    }
+    if (!insights || !data || !file || !persona) {
+      toast.error("Nothing to save yet.");
+      return;
+    }
     
-    saveAnalysis({
+    const saved = saveAnalysis({
       fileName: file.name,
       persona,
       customPersona,
@@ -99,14 +124,92 @@ const Dashboard = () => {
       recordCount: data.length - 1,
       insights,
       data,
-    });
-    
+    }, user.email);
+
+    if (!saved) {
+      toast.error("Could not save analysis locally. Please clear local cache and try again.");
+      return;
+    }
+
     setIsSaved(true);
     toast.success("Analysis saved successfully!");
-  }, [insights, data, file, persona, customPersona]);
+  }, [insights, data, file, persona, customPersona, user]);
 
   const canAnalyze = file && data && persona && 
     (persona !== 'custom' || (customPersona?.name && customPersona?.analyticalFocus));
+
+  const showExample = !user || !hasApiKey;
+  const examplePersona: PersonaType = "common";
+  const exampleData: string[][] = [
+    ["Region", "Revenue", "Customers", "Month"],
+    ["North", "120000", "320", "Jan"],
+    ["South", "98000", "280", "Jan"],
+    ["East", "143000", "360", "Jan"],
+    ["West", "110000", "300", "Jan"],
+  ];
+  const exampleInsights = {
+    dataSummary: [
+      "Dataset has 4 columns with numeric and categorical fields.",
+      "No missing values detected in the sample.",
+      "Revenue ranges from 98k to 143k.",
+    ],
+    patterns: [
+      "East region shows the highest revenue in the sample month.",
+      "Customer counts track revenue closely across regions.",
+      "South region lags behind others on both revenue and customers.",
+    ],
+    insights: [
+      "The East region may be the strongest market segment this month.",
+      "Customer volume appears to drive revenue performance across regions.",
+      "South region could benefit from targeted growth initiatives.",
+      "Revenue dispersion suggests opportunity for regional optimization.",
+      "Comparing month-over-month trends would clarify seasonality impacts.",
+      "A per-customer revenue view could reveal pricing differences by region.",
+      "West and North are close; small initiatives could shift leadership.",
+      "A focused retention campaign may improve South region outcomes.",
+    ],
+    dashboardViews: [
+      {
+        title: "Revenue by Region",
+        purpose: "Compare regional performance at a glance",
+        chartType: "bar",
+        variables: ["Region", "Revenue"],
+        aggregation: "sum",
+        xAxisLabel: "Region",
+        yAxisLabel: "Revenue",
+      },
+      {
+        title: "Customers by Region",
+        purpose: "See customer distribution",
+        chartType: "bar",
+        variables: ["Region", "Customers"],
+        aggregation: "sum",
+        xAxisLabel: "Region",
+        yAxisLabel: "Customers",
+      },
+    ],
+    cleaningReport: {
+      totalRows: 4,
+      cleanedRows: 4,
+      removedRows: 0,
+      nullsHandled: 0,
+      duplicatesRemoved: 0,
+      dataTypeCorrections: 0,
+      outliersFlagged: 0,
+      columnsAnalyzed: [
+        { name: "Region", type: "text", nullCount: 0, uniqueCount: 4 },
+        { name: "Revenue", type: "numeric", nullCount: 0, uniqueCount: 4 },
+        { name: "Customers", type: "numeric", nullCount: 0, uniqueCount: 4 },
+        { name: "Month", type: "text", nullCount: 0, uniqueCount: 1 },
+      ],
+    },
+    columnStats: {
+      Region: { type: "text", stats: {}, outlierCount: 0, nullCount: 0, uniqueCount: 4, sampleValues: ["North", "South", "East", "West"] },
+      Revenue: { type: "numeric", stats: { min: 98000, max: 143000, mean: 117750, median: 115000, stdDev: 17060 }, outlierCount: 0, nullCount: 0, uniqueCount: 4, sampleValues: ["120000", "98000", "143000", "110000"] },
+      Customers: { type: "numeric", stats: { min: 280, max: 360, mean: 315, median: 310, stdDev: 29 }, outlierCount: 0, nullCount: 0, uniqueCount: 4, sampleValues: ["320", "280", "360", "300"] },
+      Month: { type: "text", stats: {}, outlierCount: 0, nullCount: 0, uniqueCount: 1, sampleValues: ["Jan"] },
+    },
+  };
 
   // Show loading state
   if (isAnalyzing) {
@@ -160,6 +263,43 @@ const Dashboard = () => {
           data={data}
           fileName={file.name}
           customPersona={customPersona}
+        />
+      </div>
+    );
+  }
+
+  // Show example analysis for visitors without login/key
+  if (showExample) {
+    return (
+      <div className="relative">
+        <div className="relative py-12 px-6 overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,hsl(173_80%_45%/0.1),transparent_50%)]" />
+          <div className="relative max-w-4xl mx-auto text-center">
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 border border-primary/30 mb-6">
+              <Lock className="w-4 h-4 text-primary" />
+              <span className="text-sm font-medium text-primary">Login required for analysis</span>
+            </div>
+            <h1 className="font-display text-4xl md:text-5xl font-bold text-foreground mb-4">
+              Example Analysis
+            </h1>
+            <p className="text-lg text-muted-foreground max-w-2xl mx-auto leading-relaxed">
+              Sign in and add your OpenAI API key to run your own analysis. Below is a sample dashboard preview.
+            </p>
+            <div className="mt-6 flex items-center justify-center gap-3">
+              <Button asChild className="gap-2">
+                <a href="/login">Sign In / Sign Up</a>
+              </Button>
+              <Button asChild variant="outline" className="gap-2">
+                <a href="/profile">Upload API Key</a>
+              </Button>
+            </div>
+          </div>
+        </div>
+        <AnalysisDashboard
+          insights={exampleInsights}
+          persona={examplePersona}
+          data={exampleData}
+          fileName="Sample_Regional_Revenue.csv"
         />
       </div>
     );

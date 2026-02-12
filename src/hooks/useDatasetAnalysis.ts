@@ -63,12 +63,22 @@ export const useDatasetAnalysis = () => {
       console.error("Analysis error:", error);
       
       if (error instanceof Error) {
-        if (error.message.includes('Rate limit') || error.message.includes('429')) {
+        const message = error.message || "";
+        if (message.includes("Rate limit") || message.includes("429")) {
           toast.error("Rate limit reached. Please wait a moment and try again.");
-        } else if (error.message.includes('API key') || error.message.includes('401')) {
+        } else if (message.includes("API key") || message.includes("401")) {
           toast.error("Invalid API key. Please check your configuration.");
+        } else if (
+          message.toLowerCase().includes("model") &&
+          (message.toLowerCase().includes("not found") ||
+            message.toLowerCase().includes("does not exist") ||
+            message.toLowerCase().includes("not available") ||
+            message.toLowerCase().includes("not supported") ||
+            message.toLowerCase().includes("permission"))
+        ) {
+          toast.error("Model not compatible with your API key.");
         } else {
-          toast.error(error.message || "Failed to analyze dataset. Please try again.");
+          toast.error(message || "Failed to analyze dataset. Please try again.");
         }
       } else {
         toast.error("Failed to analyze dataset. Please try again.");

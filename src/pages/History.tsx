@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
 import { Bookmark, FileSpreadsheet, User, ArrowRight, Trash2, Eye, Calendar, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { ExtendedAnalysisResult } from "@/hooks/useDatasetAnalysis";
 import { PersonaType, CustomPersonaData } from "@/components/PersonaSelector";
 import { toast } from "sonner";
+import { getCurrentUser } from "@/lib/auth";
 
-interface SavedAnalysis {
+export interface SavedAnalysis {
   id: string;
   fileName: string;
   persona: PersonaType;
@@ -21,33 +22,67 @@ interface SavedAnalysis {
 
 const STORAGE_KEY = 'insightgen_saved_analyses';
 
-// Export functions for use in Dashboard
-export const saveAnalysis = (analysis: Omit<SavedAnalysis, 'id' | 'timestamp'>) => {
-  const saved = getSavedAnalyses();
-  const newAnalysis: SavedAnalysis = {
-    ...analysis,
-    id: crypto.randomUUID(),
-    timestamp: Date.now(),
-  };
-  saved.unshift(newAnalysis);
-  // Keep only last 20 analyses
-  const trimmed = saved.slice(0, 20);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-  return newAnalysis;
+const generateId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 };
 
-export const getSavedAnalyses = (): SavedAnalysis[] => {
+// Export functions for use in Dashboard
+const getStorageKey = (userEmail?: string | null) =>
+  userEmail ? `${STORAGE_KEY}_${userEmail.toLowerCase()}` : `${STORAGE_KEY}_guest`;
+
+export const saveAnalysis = (
+  analysis: Omit<SavedAnalysis, 'id' | 'timestamp'>,
+  userEmail?: string | null
+): SavedAnalysis | null => {
+  const saved = getSavedAnalyses(userEmail);
+  const sampledData = analysis.data.length > 1001
+    ? [analysis.data[0], ...analysis.data.slice(1, 1001)]
+    : analysis.data;
+
+  const newAnalysis: SavedAnalysis = {
+    ...analysis,
+    data: sampledData,
+    id: generateId(),
+    timestamp: Date.now(),
+  };
+
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
+    saved.unshift(newAnalysis);
+    // Keep only last 20 analyses
+    const trimmed = saved.slice(0, 20);
+    localStorage.setItem(getStorageKey(userEmail), JSON.stringify(trimmed));
+    return newAnalysis;
+  } catch {
+    // Retry with less data if storage is tight.
+    try {
+      const minimalAnalysis: SavedAnalysis = {
+        ...newAnalysis,
+        data: analysis.data.length > 1 ? [analysis.data[0], ...analysis.data.slice(1, 201)] : analysis.data,
+      };
+      const minimalSaved = [minimalAnalysis, ...saved].slice(0, 10);
+      localStorage.setItem(getStorageKey(userEmail), JSON.stringify(minimalSaved));
+      return minimalAnalysis;
+    } catch {
+      return null;
+    }
+  }
+};
+
+export const getSavedAnalyses = (userEmail?: string | null): SavedAnalysis[] => {
+  try {
+    const data = localStorage.getItem(getStorageKey(userEmail));
     return data ? JSON.parse(data) : [];
   } catch {
     return [];
   }
 };
 
-export const deleteAnalysis = (id: string) => {
-  const saved = getSavedAnalyses().filter(a => a.id !== id);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+export const deleteAnalysis = (id: string, userEmail?: string | null) => {
+  const saved = getSavedAnalyses(userEmail).filter(a => a.id !== id);
+  localStorage.setItem(getStorageKey(userEmail), JSON.stringify(saved));
 };
 
 const personaLabels: Record<PersonaType, string> = {
@@ -66,14 +101,17 @@ const History = () => {
   const [analyses, setAnalyses] = useState<SavedAnalysis[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
-    setAnalyses(getSavedAnalyses());
-  }, []);
+    const userEmail = getCurrentUser()?.email || null;
+    setAnalyses(getSavedAnalyses(userEmail));
+  }, [location.pathname]);
 
   const handleDelete = (id: string) => {
-    deleteAnalysis(id);
-    setAnalyses(getSavedAnalyses());
+    const userEmail = getCurrentUser()?.email || null;
+    deleteAnalysis(id, userEmail);
+    setAnalyses(getSavedAnalyses(userEmail));
     setDeleteConfirm(null);
     toast.success("Analysis deleted");
   };

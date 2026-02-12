@@ -9,6 +9,8 @@ import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
 import Methodology from "./pages/Methodology";
 import About from "./pages/About";
+import Login from "./pages/Login";
+import Profile from "./pages/Profile";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -18,7 +20,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
+      <BrowserRouter basename={import.meta.env.BASE_URL}>
         <Layout>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -26,6 +28,8 @@ const App = () => (
             <Route path="/history" element={<History />} />
             <Route path="/methodology" element={<Methodology />} />
             <Route path="/about" element={<About />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/profile" element={<Profile />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
