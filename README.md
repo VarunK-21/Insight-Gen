@@ -1,18 +1,24 @@
 # Insight Gen
 
-Insight Gen is a persona-driven analytics app that preprocesses CSV datasets, generates insights, and builds structured visualizations directly in the browser. It is frontend-only and uses each user's own OpenAI API key.
+Insight Gen is a persona-driven analytics app that preprocesses CSV/Excel datasets, generates insights, and builds structured visualizations directly in the browser. It is frontend-only and uses each user's own OpenAI API key.
 
 ## Features
 
-- CSV upload with cleaning and preprocessing
+- CSV and Excel upload with cleaning and preprocessing
+- Built-in sample dataset button (to try the app without your own file)
 - Persona-based analysis (common, accountant, engineer, policy, and more)
+- Auto persona + KPI suggestions based on the dataset
 - AI insights with structured dashboard suggestions
-- Minimum 4 chart views with fallback chart generation
+- Minimum 4 chart views with fallback chart generation (prefers at least one pie chart when data supports it)
 - Local Sign In / Sign Up profile flow (browser-local)
 - Per-user saved analyses history (local only)
 - API key management: save, view/hide, edit, remove
 - Model selection in profile (user-preferred OpenAI model)
-- Clear local cache / fresh-start option
+- Strict Analysis Mode toggle (lower hallucinations via stricter rules + low temperature)
+- Dataset-hash caching for:
+  - analysis results per dataset + persona
+  - auto persona + KPI recommendations per dataset
+- Clear local cache / fresh-start option (also clears hash-based caches)
 
 ## Tech Stack
 
@@ -20,6 +26,8 @@ Insight Gen is a persona-driven analytics app that preprocesses CSV datasets, ge
 - React + TypeScript
 - Tailwind CSS + shadcn/ui
 - OpenAI API (user-provided key)
+- Recharts (charts)
+- xlsx (Excel parsing)
 
 ## Project Structure
 
@@ -48,7 +56,7 @@ npm install
 npm run dev
 ```
 
-Open: `http://localhost:8080`
+Open: `http://localhost:5173/` (or the URL shown in the Vite dev server)
 
 ## API Key and Model
 

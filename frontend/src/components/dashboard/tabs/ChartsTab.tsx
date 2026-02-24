@@ -9,6 +9,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 
+import { AnalyticalIntent } from "@/lib/analyticalIntent";
+import { deriveAxisLabels } from "@/lib/axisLabels";
+import {
+  calculateConfidenceInterval,
+  calculateMedianAndSkewness,
+  detectOutliersIQR,
+  calculateRobustStatistics
+} from "@/lib/advancedAnalytics";
+
 interface DashboardView {
   title: string;
   purpose: string;
@@ -17,6 +26,7 @@ interface DashboardView {
   aggregation?: string;
   xAxisLabel?: string;
   yAxisLabel?: string;
+  analyticalIntent?: AnalyticalIntent; // Structured intent for relationship charts
 }
 
 interface ChartsTabProps {
@@ -55,7 +65,13 @@ const cleanLabel = (label: string): string => {
 };
 
 // Format large numbers for display
+// Special handling: Don't format years (1900-2100) with K/M suffixes
 const formatValue = (value: number): string => {
+  // Check if value is a year (4-digit integer in reasonable range)
+  if (Number.isInteger(value) && value >= 1900 && value <= 2100) {
+    return value.toString(); // Return year as-is, no formatting
+  }
+  
   if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
   if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
   return value.toLocaleString();
@@ -98,47 +114,102 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
       return textCount >= vals.length * 0.6;
     };
 
-    // Find column indices for the variables
-    const varMatches = view.variables.map(v => {
-      let idx = headers.findIndex(h => h?.toLowerCase() === v?.toLowerCase());
-      if (idx === -1) {
-        idx = headers.findIndex(h => 
-          h?.toLowerCase()?.includes(v?.toLowerCase()) || 
-          v?.toLowerCase()?.includes(h?.toLowerCase())
-        );
+    // SPECIAL HANDLING: Scatter plots with relationship variables
+    // For relationship charts, use raw variables directly, not aggregated data
+    if (view.chartType === 'scatter' && view.analyticalIntent?.relationship_variables) {
+      const relVars = view.analyticalIntent.relationship_variables;
+      
+      // Find column indices for relationship variables
+      const indVarIdx = headers.findIndex(h => 
+        h?.toLowerCase() === relVars.independent?.toLowerCase() ||
+        h?.toLowerCase()?.includes(relVars.independent?.toLowerCase()) ||
+        relVars.independent?.toLowerCase()?.includes(h?.toLowerCase())
+      );
+      
+      const depVarIdx = headers.findIndex(h => 
+        h?.toLowerCase() === relVars.dependent?.toLowerCase() ||
+        h?.toLowerCase()?.includes(relVars.dependent?.toLowerCase()) ||
+        relVars.dependent?.toLowerCase()?.includes(h?.toLowerCase())
+      );
+      
+      if (indVarIdx >= 0 && depVarIdx >= 0) {
+        // Sample data for scatter plot (raw points, not aggregated)
+        const sampleSize = Math.min(rows.length, 1000); // More points for scatter
+        const sampleStep = Math.ceil(rows.length / sampleSize);
+        const sampledRows = rows.filter((_, i) => i % sampleStep === 0).slice(0, sampleSize);
+        
+        const scatterData = sampledRows
+          .map(row => {
+            const xVal = parseFloat((row[indVarIdx] || '0').toString().replace(/[,$%]/g, ''));
+            const yVal = parseFloat((row[depVarIdx] || '0').toString().replace(/[,$%]/g, ''));
+            
+            if (isNaN(xVal) || isNaN(yVal) || !isFinite(xVal) || !isFinite(yVal)) {
+              return null;
+            }
+            
+            return {
+              x: xVal,
+              y: yVal,
+              name: `${relVars.independent}: ${xVal}, ${relVars.dependent}: ${yVal}`
+            };
+          })
+          .filter((point): point is { x: number; y: number; name: string } => point !== null);
+        
+        return scatterData.length >= 2 ? scatterData : null;
       }
-      if (idx === -1) return null;
-      return { idx, isNumeric: isNumericColumn(idx), isText: isTextColumn(idx) };
-    }).filter(Boolean) as Array<{ idx: number; isNumeric: boolean; isText: boolean }>;
-
-    // Find fallback columns if no matches
-    let labelIdx = varMatches.find(v => v.isText)?.idx ?? -1;
-    let valueIdx = varMatches.find(v => v.isNumeric)?.idx ?? -1;
-
-    if (labelIdx === -1 && varMatches[0]) {
-      labelIdx = varMatches[0].idx;
     }
 
-    if (valueIdx === -1 && varMatches[1]) {
-      valueIdx = varMatches[1].idx;
+    // CRITICAL: Use analyticalIntent as the ONLY source of truth
+    // Do NOT use view.variables or view.aggregation - they can drift
+    if (!view.analyticalIntent) {
+      console.error('Chart view missing analyticalIntent:', view);
+      return null; // Fail fast - no intent means no chart
     }
 
+    const intent = view.analyticalIntent;
+    const groupBy = Array.isArray(intent.group_by) ? intent.group_by : [];
+    
+    // For grouped charts (bar, line, pie, area), we need group_by and metric
+    if (groupBy.length === 0 && !intent.relationship_variables) {
+      console.error('Chart intent missing group_by or relationship_variables:', intent);
+      return null;
+    }
+
+    // Find label column (grouping variable) - EXACT MATCH ONLY, NO FALLBACK
+    const labelColumnName = groupBy[0];
+    let labelIdx = headers.findIndex(h => h?.toLowerCase() === labelColumnName?.toLowerCase());
     if (labelIdx === -1) {
-      // Find first text column
-      labelIdx = headers.findIndex((_, idx) => {
-        const vals = rows.slice(0, 20).map(r => r[idx]).filter(Boolean);
-        return vals.some(v => v && isNaN(parseFloat(v.toString())));
-      });
-      if (labelIdx === -1) labelIdx = 0;
+      // Try case-insensitive partial match as last resort
+      labelIdx = headers.findIndex(h => 
+        h?.toLowerCase()?.includes(labelColumnName?.toLowerCase()) || 
+        labelColumnName?.toLowerCase()?.includes(h?.toLowerCase())
+      );
+    }
+    
+    if (labelIdx === -1) {
+      console.error(`Grouping column "${labelColumnName}" not found in dataset headers:`, headers);
+      return null; // FAIL FAST - no fallback
     }
 
-    if (valueIdx === -1 || valueIdx === labelIdx) {
-      // Find first numeric column that isn't the label
-      valueIdx = headers.findIndex((_, idx) => {
-        if (idx === labelIdx) return false;
-        return isNumericColumn(idx);
-      });
-      if (valueIdx === -1) valueIdx = labelIdx === 0 ? Math.min(1, headers.length - 1) : 0;
+    // Find value column (metric column) - EXACT MATCH ONLY, NO FALLBACK
+    const metricColumnName = intent.metric.column;
+    let valueIdx = headers.findIndex(h => h?.toLowerCase() === metricColumnName?.toLowerCase());
+    if (valueIdx === -1) {
+      // Try case-insensitive partial match as last resort
+      valueIdx = headers.findIndex(h => 
+        h?.toLowerCase()?.includes(metricColumnName?.toLowerCase()) || 
+        metricColumnName?.toLowerCase()?.includes(h?.toLowerCase())
+      );
+    }
+    
+    if (valueIdx === -1) {
+      console.error(`Metric column "${metricColumnName}" not found in dataset headers:`, headers);
+      return null; // FAIL FAST - no fallback
+    }
+
+    if (labelIdx === valueIdx) {
+      console.error(`Label column and metric column are the same: "${labelColumnName}"`);
+      return null; // FAIL FAST - invalid configuration
     }
 
     // Sample larger datasets to prevent performance issues
@@ -147,9 +218,28 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
     const sampledRows = rows.filter((_, i) => i % sampleStep === 0).slice(0, sampleSize);
 
     // Aggregate data - filter out invalid labels early
-    const aggregated: Record<string, { sum: number; count: number; values: number[] }> = {};
+    // Enhanced structure to support advanced analytics
+    const aggregated: Record<string, { 
+      sum: number; 
+      count: number; 
+      values: number[];
+      // Advanced analytics will be computed per group
+    }> = {};
     
-    const aggregation = normalizeAggregation(view.aggregation);
+    // CRITICAL: Use aggregation from analyticalIntent, NOT view.aggregation
+    // view.aggregation can drift, but intent.metric.aggregation is the source of truth
+    const aggregation = normalizeAggregation(intent.metric.aggregation);
+    
+    // Log for debugging (can remove in production)
+    console.log('Chart Data Generation:', {
+      title: view.title,
+      labelColumn: labelColumnName,
+      metricColumn: metricColumnName,
+      aggregation: intent.metric.aggregation,
+      normalizedAggregation: aggregation,
+      labelIdx,
+      valueIdx
+    });
 
     sampledRows.forEach(row => {
       const rawLabel = (row[labelIdx] || '').toString().trim();
@@ -181,9 +271,38 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
       .filter(([name]) => name && name.length > 0) // Extra filter for valid names
       .map(([name, d]) => {
         let value: number;
+        let median: number | undefined;
+        let confidenceInterval: ReturnType<typeof calculateConfidenceInterval> | undefined;
+        let skewnessInfo: ReturnType<typeof calculateMedianAndSkewness> | undefined;
+        let outlierInfo: ReturnType<typeof detectOutliersIQR> | undefined;
+        let showWarning = false;
+        let warningMessage = '';
+        
         switch (aggregation) {
           case 'avg':
             value = d.count > 0 ? Math.round(d.sum / d.count * 100) / 100 : 0;
+            
+            // Advanced analytics for averages
+            if (d.values.length >= 3) { // Need at least 3 values for meaningful stats
+              // Calculate confidence interval
+              confidenceInterval = calculateConfidenceInterval(d.values);
+              
+              // Calculate median and skewness
+              skewnessInfo = calculateMedianAndSkewness(d.values);
+              median = skewnessInfo.median;
+              
+              // Detect outliers
+              outlierInfo = detectOutliersIQR(d.values);
+              
+              // Generate warnings if needed
+              if (skewnessInfo.isSkewed && skewnessInfo.recommendation === 'median') {
+                showWarning = true;
+                warningMessage = `Data is skewed (skewness: ${skewnessInfo.skewness}). Consider using median (${median}) instead of mean (${value}).`;
+              } else if (outlierInfo.outlierPercentage > 10) {
+                showWarning = true;
+                warningMessage = `High outlier rate (${outlierInfo.outlierPercentage}%). Mean may be misleading.`;
+              }
+            }
             break;
           case 'count':
             value = d.count;
@@ -198,6 +317,13 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
           fullName: name,
           value,
           count: d.count,
+          // Advanced analytics metadata
+          median,
+          confidenceInterval,
+          skewnessInfo,
+          outlierInfo,
+          showWarning,
+          warningMessage
         };
       })
       .filter(d => isFinite(d.value) && d.name)
@@ -258,40 +384,58 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
 
     const axisStyle = { fill: 'hsl(215, 20%, 60%)', fontSize: 11 };
     
-    // Extract meaningful axis labels from view
-    const xAxisLabel = view.xAxisLabel || view.variables[0] || 'Category';
-    const valueLabel = view.yAxisLabel || view.variables[1] || 'Value';
-    const aggregation = normalizeAggregation(view.aggregation);
-    const yAxisLabel = aggregation === 'count'
-      ? 'Count'
-      : aggregation === 'avg'
-        ? valueLabel.toLowerCase().startsWith("average ") ? valueLabel : `Average ${valueLabel}`
-        : valueLabel.toLowerCase().startsWith("total ") ? valueLabel : `Total ${valueLabel}`;
+    // CRITICAL: Always derive axis labels from intent - never trust stored labels
+    // Ensures X/Y labels ALWAYS match what is actually displayed (any dataset, any domain)
+    const derived = deriveAxisLabels(view);
+    const xAxisLabel = derived.xAxisLabel;
+    const yAxisLabel = derived.yAxisLabel;
+    const aggregation = normalizeAggregation(derived.aggregationLabel === 'raw' ? view.aggregation : derived.aggregationLabel) as 'sum' | 'avg' | 'count';
 
-    // Custom tooltip formatter with context
+    // Custom tooltip formatter - uses formatValue for consistency (years, K/M, etc.)
     const formatTooltipValue = (value: number, name: string) => {
-      const formattedValue = value >= 1000000 
-        ? `${(value / 1000000).toFixed(2)}M` 
-        : value >= 1000 
-          ? `${(value / 1000).toFixed(1)}K`
-          : value.toLocaleString();
-      
-      const label = view.aggregation === 'count' ? 'Count' : 
-                    view.aggregation === 'avg' ? 'Average' : 'Total';
+      const formattedValue = formatValue(value);
+      const label = aggregation === 'count' ? 'Count' : 
+                    aggregation === 'avg' ? 'Average' : 'Total';
       return [formattedValue, label];
     };
 
     switch (view.chartType) {
       case 'bar':
+        // Check if any data points have warnings
+        const hasWarnings = chartData.some((d: any) => d.showWarning);
+        const warnings = chartData.filter((d: any) => d.showWarning) as Array<any>;
+        
         return (
           <div className="space-y-2">
+            {/* Warnings for skewed data or outliers */}
+            {hasWarnings && (
+              <div className="px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+                <p className="text-xs font-medium text-yellow-600 dark:text-yellow-400 mb-1">
+                  ⚠️ Statistical Warning
+                </p>
+                {warnings.slice(0, 2).map((w: any, idx: number) => (
+                  <p key={idx} className="text-xs text-yellow-700 dark:text-yellow-300">
+                    {w.fullName}: {w.warningMessage}
+                  </p>
+                ))}
+                {warnings.length > 2 && (
+                  <p className="text-xs text-yellow-700 dark:text-yellow-300 mt-1">
+                    +{warnings.length - 2} more warnings
+                  </p>
+                )}
+              </div>
+            )}
+            
             {/* Chart Description */}
             <div className="px-2 py-1.5 rounded-lg bg-muted/50 border border-border/50">
               <p className="text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">X-Axis:</span> {xAxisLabel} • 
                 <span className="font-medium text-foreground ml-2">Y-Axis:</span> {yAxisLabel}
-                {view.aggregation && view.aggregation !== 'none' && (
-                  <span className="ml-2">• Aggregated by <span className="text-primary">{view.aggregation}</span></span>
+                {aggregation && aggregation !== 'none' && (
+                  <span className="ml-2">• Aggregated by <span className="text-primary">{aggregation}</span></span>
+                )}
+                {aggregation === 'avg' && chartData[0]?.confidenceInterval && (
+                  <span className="ml-2">• 95% CI available</span>
                 )}
               </p>
             </div>
@@ -318,11 +462,40 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
                 <Tooltip 
                   contentStyle={tooltipStyle}
                   labelStyle={{ color: 'hsl(210, 40%, 98%)', fontWeight: 600, marginBottom: 4 }}
-                  formatter={formatTooltipValue}
+                  formatter={(value: number, name: string, props: any) => {
+                    const payload = props.payload;
+                    const formattedValue = formatTooltipValue(value, name)[0];
+                    const label = formatTooltipValue(value, name)[1];
+                    
+                    // Enhanced tooltip with advanced analytics
+                    const tooltipLines = [`${formattedValue}`, label];
+                    
+                    if (aggregation === 'avg' && payload?.confidenceInterval) {
+                      const ci = payload.confidenceInterval;
+                      tooltipLines.push(`95% CI: [${ci.lowerBound}, ${ci.upperBound}]`);
+                    }
+                    
+                    if (aggregation === 'avg' && payload?.median !== undefined) {
+                      tooltipLines.push(`Median: ${payload.median}`);
+                    }
+                    
+                    if (payload?.count !== undefined) {
+                      tooltipLines.push(`Sample size: ${payload.count}`);
+                    }
+                    
+                    return tooltipLines;
+                  }}
                   labelFormatter={(label) => `${xAxisLabel}: ${label}`}
                 />
                 <Legend wrapperStyle={{ paddingTop: 10 }} />
-                <Bar dataKey="value" name={yAxisLabel} fill={COLORS[0]} radius={[6, 6, 0, 0]} />
+                <Bar dataKey="value" name={yAxisLabel} fill={COLORS[0]} radius={[6, 6, 0, 0]}>
+                  {chartData.map((entry: any, index: number) => (
+                    <Cell 
+                      key={`cell-${index}`} 
+                      fill={entry?.showWarning ? 'hsl(45, 93%, 47%)' : COLORS[index % COLORS.length]} 
+                    />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -481,6 +654,62 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
         );
       
       case 'scatter':
+        // Check if this is a relationship scatter plot with raw variables
+        const isRelationshipScatter = view.analyticalIntent?.relationship_variables && 
+          Array.isArray(chartData) && 
+          chartData.length > 0 && 
+          'x' in chartData[0] && 
+          'y' in chartData[0];
+        
+        if (isRelationshipScatter && view.analyticalIntent?.relationship_variables) {
+          // Use derived labels - same as xAxisLabel/yAxisLabel from deriveAxisLabels (exact column names)
+          return (
+            <div className="space-y-2">
+              <div className="px-2 py-1.5 rounded-lg bg-muted/50 border border-border/50">
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">X-Axis:</span> {xAxisLabel} • 
+                  <span className="font-medium text-foreground ml-2">Y-Axis:</span> {yAxisLabel}
+                  <span className="ml-2">• Each point represents a data row</span>
+                </p>
+              </div>
+              <ResponsiveContainer width="100%" height={height}>
+                <ScatterChart margin={{ top: 20, right: 30, left: 10, bottom: 40 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(222, 30%, 20%)" opacity={0.4} />
+                  <XAxis 
+                    type="number" 
+                    dataKey="x" 
+                    name={xAxisLabel}
+                    tick={axisStyle}
+                    tickFormatter={(val) => formatValue(val)}
+                    label={{ value: xAxisLabel, position: 'bottom', offset: 0, fill: 'hsl(173, 80%, 45%)', fontSize: 11, fontWeight: 600 }}
+                  />
+                  <YAxis 
+                    type="number" 
+                    dataKey="y" 
+                    name={yAxisLabel}
+                    tick={axisStyle}
+                    tickFormatter={(val) => formatValue(val)}
+                    label={{ value: yAxisLabel, angle: -90, position: 'insideLeft', fill: 'hsl(173, 80%, 45%)', fontSize: 11, fontWeight: 600 }}
+                  />
+                  <Tooltip 
+                    cursor={{ strokeDasharray: '3 3', stroke: 'hsl(173, 80%, 45%)' }} 
+                    contentStyle={tooltipStyle}
+                    formatter={(value: number, name: string) => [formatValue(value), name]}
+                    labelFormatter={(label) => `${xAxisLabel}: ${label}`}
+                  />
+                  <Legend wrapperStyle={{ paddingTop: 10 }} />
+                  <Scatter name="Data Points" data={chartData} fill={COLORS[0]}>
+                    {chartData.map((_, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[0]} opacity={0.6} />
+                    ))}
+                  </Scatter>
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+          );
+        }
+        
+        // Fallback: Legacy scatter plot (aggregated data)
         return (
           <div className="space-y-2">
             <div className="px-2 py-1.5 rounded-lg bg-muted/50 border border-border/50">
@@ -705,9 +934,9 @@ export const ChartsTab = ({ data, dashboardViews }: ChartsTabProps) => {
                     <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-primary/20 text-primary uppercase flex-shrink-0">
                       {view.chartType}
                     </span>
-                    {view.aggregation && view.aggregation !== 'none' && (
+                    {view.analyticalIntent?.metric.aggregation && view.analyticalIntent.metric.aggregation !== 'none' && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/20 text-accent uppercase flex-shrink-0">
-                        {normalizeAggregation(view.aggregation)}
+                        {normalizeAggregation(view.analyticalIntent.metric.aggregation)}
                       </span>
                     )}
                   </div>

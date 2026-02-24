@@ -100,6 +100,29 @@ const Profile = () => {
 
   const handleClearCache = () => {
     if (!user) return;
+    
+    // Clear saved analyses
+    localStorage.removeItem(`insightgen_saved_analyses_${user.email.toLowerCase()}`);
+    
+    // Clear analysis and recommendation caches only
+    const cachePrefixes = ["insight_gen_analysis_cache_v1:", "insight_gen_reco_cache_v1:"];
+    let clearedCount = 0;
+    for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+      const key = localStorage.key(i);
+      if (key && cachePrefixes.some((prefix) => key.startsWith(prefix))) {
+        localStorage.removeItem(key);
+        clearedCount++;
+      }
+    }
+    
+    // DO NOT clear API key, model, or strict mode
+    toast.success(`Cache cleared. ${clearedCount} cached items removed.`);
+  };
+
+  const handleClearAllData = () => {
+    if (!user) return;
+    
+    // Clear everything including API key
     localStorage.removeItem(`insightgen_saved_analyses_${user.email.toLowerCase()}`);
     const cachePrefixes = ["insight_gen_analysis_cache_v1:", "insight_gen_reco_cache_v1:"];
     for (let i = localStorage.length - 1; i >= 0; i -= 1) {
@@ -113,7 +136,7 @@ const Profile = () => {
     setStrictMode(false);
     setStrictModeState(false);
     setHasKey(false);
-    toast.success("Local cache cleared.");
+    toast.success("All local data cleared, including API key.");
   };
 
   const handleToggleStrictMode = () => {
@@ -340,16 +363,31 @@ const Profile = () => {
         </p>
       </div>
 
+      <div className="glass-card rounded-2xl p-8 space-y-4 border border-orange-500/30">
+        <div className="flex items-center gap-2">
+          <Trash2 className="w-5 h-5 text-orange-500" />
+          <h2 className="font-display text-xl font-semibold">Clear Cache</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          This removes cached analysis results and saved analyses. Your API key, model, and settings will be preserved.
+        </p>
+        <Button variant="outline" className="gap-2 border-orange-500/50 text-orange-600 hover:bg-orange-500/10" onClick={handleClearCache}>
+          <Trash2 className="w-4 h-4" />
+          Clear Cache Only
+        </Button>
+      </div>
+
       <div className="glass-card rounded-2xl p-8 space-y-4 border border-destructive/30">
         <div className="flex items-center gap-2">
           <Trash2 className="w-5 h-5 text-destructive" />
-          <h2 className="font-display text-xl font-semibold text-destructive">Clear Local Cache</h2>
+          <h2 className="font-display text-xl font-semibold text-destructive">Clear All Local Data</h2>
         </div>
         <p className="text-sm text-muted-foreground">
-          This removes your saved analyses and local API key on this device only.
+          This removes everything: saved analyses, cache, API key, model, and settings. You will need to re-enter your API key.
         </p>
-        <Button variant="destructive" className="gap-2" onClick={handleClearCache}>
-          Clear Local Data
+        <Button variant="destructive" className="gap-2" onClick={handleClearAllData}>
+          <Trash2 className="w-4 h-4" />
+          Clear All Data
         </Button>
       </div>
     </div>

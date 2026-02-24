@@ -33,9 +33,44 @@ type CleanedResult = {
 const DATE_PATTERN_1 = /^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$/;
 const DATE_PATTERN_2 = /^\d{4}-\d{2}-\d{2}/;
 
-export function detectColumnType(values: string[]): string {
+/**
+ * Detects if a column contains year values (4-digit numbers in reasonable year range)
+ */
+export function isYearColumn(values: string[], columnName?: string): boolean {
+  // Check column name for year keywords
+  if (columnName) {
+    const name = columnName.toLowerCase();
+    if (name.includes('year') || name.includes('launchyear') || name.includes('birthyear')) {
+      return true;
+    }
+  }
+
+  // Check if values are years (4-digit numbers in 1900-2100 range)
+  const nonEmpty = values.filter((v) => v && v.trim());
+  if (nonEmpty.length === 0) return false;
+
+  let yearCount = 0;
+  for (const v of nonEmpty) {
+    const cleaned = v.replace(/,/g, "").replace(/[$€£]/g, "").trim();
+    const num = Number(cleaned);
+    // Check if it's a 4-digit number in reasonable year range
+    if (!Number.isNaN(num) && Number.isInteger(num) && num >= 1900 && num <= 2100 && cleaned.length === 4) {
+      yearCount += 1;
+    }
+  }
+
+  // If 80%+ of values are years, consider it a year column
+  return yearCount >= nonEmpty.length * 0.8;
+}
+
+export function detectColumnType(values: string[], columnName?: string): string {
   const nonEmpty = values.filter((v) => v && v.trim());
   if (nonEmpty.length === 0) return "text";
+
+  // Check for year column first
+  if (isYearColumn(values, columnName)) {
+    return "year";
+  }
 
   let numericCount = 0;
   let dateCount = 0;
@@ -133,7 +168,7 @@ export function cleanAndPrepareData(data: string[][]): CleanedResult {
 
   const columnTypes = headers.map((_, idx) => {
     const values = rows.map((row) => (idx < row.length ? row[idx] : ""));
-    return detectColumnType(values);
+    return detectColumnType(values, headers[idx]);
   });
 
   let nullsHandled = 0;

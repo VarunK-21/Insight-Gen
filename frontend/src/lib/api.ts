@@ -1,4 +1,15 @@
 import { cleanAndPrepareData, CleaningReport, ColumnStats } from "@/lib/dataCleaning";
+import { validateChartViews, DashboardView as ValidatedDashboardView } from "@/lib/chartValidation";
+import { 
+  AnalyticalIntent, 
+  ColumnMetadata, 
+  buildColumnMetadata, 
+  validateAnalyticalIntent,
+  generateTitleFromIntent,
+  extractIntentFromText
+} from "@/lib/analyticalIntent";
+import { bindMetricColumn, validateMetricBinding } from "@/lib/metricBinding";
+import { deriveAxisLabels } from "@/lib/axisLabels";
 
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const API_KEY_STORAGE = "insight_weaver_openai_key";
@@ -290,8 +301,64 @@ RULES:
 - Suggest chart types that would best visualize each pattern (bar, line, pie, scatter, area, radar)
 - Include at least 6-8 dashboard view suggestions with varied chart types
 - For each dashboard view, specify clear variable names that exist in the dataset
+
+CRITICAL CHART VALIDATION RULES (APPLIES TO ALL DATASETS AND DOMAINS):
+
+1. TITLE-VARIABLE CONSISTENCY (Universal Rule):
+   - Chart title MUST accurately describe what the chart shows
+   - ALL keywords mentioned in title MUST correspond to variables in the chart
+   - Pattern "X by Y" means: Y on X-axis (categories), X on Y-axis (values)
+   - Pattern "X vs Y" or "X and Y relationship" requires BOTH variables present
+   - If title mentions a dimension (age, region, category, etc.), that dimension MUST be in variables
+   - NEVER use wrong variables just because they're available - match title exactly
+
+2. AGGREGATION TYPE RULES (Data-Type Aware):
+   - Categorical data (status, type, category, group, label, etc.): Use "count" ONLY
+   - Ordinal data (levels, grades, ratings, ranks, scores with limited values): Use "count" or distribution, NEVER "avg"
+   - Text data: Use "count" ONLY, never "avg" or "sum"
+   - Continuous numeric data (revenue, income, measurements, etc.): Can use "avg", "sum", or "count"
+   - Boolean data: Use "count" ONLY
+   - Date data: Use "count" for grouping, or extract components (year, month) for trends
+   - Rule of thumb: If you can't meaningfully add values, don't average them
+
+3. RELATIONSHIP CHARTS (Universal Pattern):
+   - Title keywords: "relationship", "vs", "versus", "by", "across", "comparison" → Requires 2+ variables
+   - Pie charts show DISTRIBUTION of ONE variable, NOT relationships
+   - For relationships: Use bar charts (grouped or stacked), line charts, or scatter plots
+   - "X and Y relationship" pie chart → Convert to stacked/grouped bar chart
+   - Relationship charts must show how one variable varies WITH another
+
+4. AXIS LABEL ACCURACY (CRITICAL - Universal for any dataset/domain):
+   - Axis labels are DERIVED from analyticalIntent - your xAxisLabel/yAxisLabel are overridden for accuracy
+   - X-axis: Must be the grouping dimension (group_by[0] or relationship_variables.independent)
+   - Y-axis: For aggregated charts = "{Aggregation} {MetricColumn}" (e.g., "Average Age", "Total Revenue", "Count")
+   - Y-axis: For scatter/relationship = raw column names (relationship_variables.dependent)
+   - Labels MUST match what is actually displayed - wrong labels mislead users and break trust
+   - Use exact column names from the dataset - never generic terms like "Category" if the column is "Region"
+
+5. VARIABLE MAPPING (Correct Order):
+   - variables[0] = X-axis (typically categorical/grouping variable)
+   - variables[1] = Y-axis (typically numeric/measurement variable)
+   - For pie charts: variables[0] = the category being distributed
+   - Variable names MUST exist in the provided column list (case-insensitive match)
+   - Use exact column names from the dataset, not variations
+
+6. CHART TYPE SELECTION (Domain-Agnostic):
+   - Bar charts: Compare values across categories (works for any categorical X, numeric Y)
+   - Line charts: Show trends over ordered categories (time, sequence, ordered groups)
+   - Pie charts: Show distribution/proportions of ONE categorical variable
+   - Scatter plots: Show relationship between TWO continuous variables
+   - Area charts: Show cumulative or stacked trends
+   - Table: For detailed comparisons when charts are too complex
+
+7. DOMAIN-INDEPENDENT VALIDATION:
+   - Works for ANY industry: finance, healthcare, retail, tech, education, etc.
+   - Works for ANY data type: sales, surveys, logs, transactions, metrics, etc.
+   - Validation rules apply universally, not domain-specific
+   - Focus on data structure (categorical vs numeric) not domain semantics
+
 - IMPORTANT: Only suggest charts where you have valid data - if data is sparse or unclear, suggest fewer charts
-- For each chart, provide clear xAxisLabel and yAxisLabel that explain what is being shown
+- For each chart, provide clear xAxisLabel and yAxisLabel that MUST match the actual variables being used
 
 Respond with ONLY a JSON object (no markdown, no code blocks) in this exact format:
 {
@@ -299,13 +366,159 @@ Respond with ONLY a JSON object (no markdown, no code blocks) in this exact form
   "patterns": ["statistical pattern 1", "trend 2", "correlation 3", "anomaly 4"],
   "insights": ["persona-specific insight 1", "insight 2", "insight 3", "insight 4", "insight 5", "insight 6", "insight 7", "insight 8"],
   "dashboardViews": [
-    {"title": "Chart Title", "purpose": "What this visualization reveals", "chartType": "bar", "variables": ["column1", "column2"], "aggregation": "sum", "xAxisLabel": "X Axis Description", "yAxisLabel": "Y Axis Description"},
-    {"title": "Another View", "purpose": "Purpose", "chartType": "line", "variables": ["col1"], "aggregation": "avg", "xAxisLabel": "X Axis", "yAxisLabel": "Y Axis"},
-    {"title": "Distribution View", "purpose": "Show distribution", "chartType": "pie", "variables": ["category_column"], "aggregation": "count", "xAxisLabel": "Categories", "yAxisLabel": "Count"}
+    {
+      "title": "Chart Title",
+      "purpose": "What this visualization reveals",
+      "chartType": "bar",
+      "variables": ["column1", "column2"],
+      "aggregation": "sum",
+      "xAxisLabel": "X Axis Description",
+      "yAxisLabel": "Y Axis Description",
+      "analyticalIntent": {
+        "insight_text": "Brief description of what this chart shows",
+        "analysis_type": "comparison",
+        "metric": {
+          "column": "column2",
+          "aggregation": "sum",
+          "display_name": "Column2 Name"
+        },
+        "group_by": ["column1"],
+        "chart_type": "bar",
+        "expected_output": "What the chart should show"
+      }
+    }
   ],
   "cleaningNotes": ["note about data quality 1", "note 2"],
   "warning": "optional warning if data quality is concerning"
-}`;
+}
+
+CRITICAL: For each dashboardView, you MUST include analyticalIntent. This is the SOURCE OF TRUTH.
+
+analyticalIntent Structure:
+{
+  "insight_text": "Brief description of what this chart shows",
+  "analysis_type": "comparison" | "distribution" | "relationship" | "trend" | "correlation",
+  "metric": {
+    "column": "exact_column_name_from_dataset",
+    "aggregation": "avg" | "sum" | "count" | "median" | "min" | "max",
+    "display_name": "Human-readable name"
+  },
+  "group_by": ["column_name_for_grouping"],
+  "relationship_variables": {
+    "independent": "x_axis_column",
+    "dependent": "y_axis_column"
+  },
+  "chart_type": "bar" | "line" | "pie" | "scatter" | "area" | "table",
+  "expected_output": "What the chart should show"
+}
+
+RULES FOR analyticalIntent:
+1. analysis_type must match the analytical question:
+   - "comparison": Comparing values across categories (e.g., "Average Age by Occupation")
+   - "distribution": Showing distribution of one variable (e.g., "Marital Status Distribution")
+   - "relationship": Showing relationship between two variables (e.g., "Capital Gain vs Capital Loss")
+   - "trend": Showing trends over time/sequence
+   - "correlation": Showing correlation between variables
+
+2. metric.column MUST be an exact column name from the dataset
+   - Use the exact column name as provided in the column list
+   - CRITICAL: If title says "Average Age", metric.column MUST be "age" (or exact column name)
+   - CRITICAL: If title says "Total Amount", metric.column MUST be "amount" (or exact column name)
+   - DO NOT use categorical columns as metrics
+   - metric.aggregation MUST match the title:
+     * Title says "Average X" → aggregation = "avg", metric.column = "X"
+     * Title says "Total X" → aggregation = "sum", metric.column = "X"
+     * Title says "Count of X" → aggregation = "count" (only for explicit counts)
+   - For numeric columns (continuous or ordinal):
+     * Prefer "avg" or "sum" over "count"
+     * "count" should ONLY be used for distribution analysis
+
+3. metric.column: CRITICAL - Must be an actual metric column from the dataset
+   - DO NOT use categorical/ordinal columns as metrics
+   - DO NOT default to count unless explicitly analyzing distribution
+   - If insight mentions "Amount", "Revenue", "Sales", "Price", etc., use that exact column
+   - If dataset has numeric columns like "Amount", "Revenue", "Sales", prefer those
+   - metric.aggregation: Must match the analytical intent:
+     * "Total Sales Amount" → aggregation = "sum", metric.column = "Amount" or "Sales"
+     * "Average Age" → aggregation = "avg", metric.column = "Age"
+     * "Count of transactions" → aggregation = "count" (only for explicit counts)
+   - NEVER use "count" when the insight is about amounts/revenue/sales/values
+
+4. group_by: Array of columns used for grouping
+   - Must be categorical/ordinal columns
+   - For "X by Y" charts: Y goes in group_by, X is the metric
+   - Example: "Sales by Country" → group_by = ["Country"], metric.column = "Sales"
+
+5. relationship_variables: REQUIRED if analysis_type is "relationship" or "correlation"
+   - independent: The X-axis variable (what we're comparing against)
+   - dependent: The Y-axis variable (what we're measuring)
+   - Both must be exact column names from the dataset
+   - For scatter plots, these are the raw variables, NOT aggregated
+
+5. chart_type must match analysis_type:
+   - "comparison" → "bar" or "line"
+   - "distribution" → "pie" or "bar"
+   - "relationship" → "scatter" or "bar" (stacked/grouped)
+   - "correlation" → "scatter" or "line"
+   - "trend" → "line" or "area"
+
+6. METRIC BINDING RULES (CRITICAL - NO GUESSING):
+   - YOU MUST EXPLICITLY DECLARE metric.column in analyticalIntent
+   - DO NOT leave metric.column empty or undefined
+   - DO NOT rely on the system to guess - be explicit
+   
+   - When title/insight says "Average X by Y":
+     * metric.column MUST be "X" (exact column name, e.g., "age", "education-num")
+     * metric.aggregation MUST be "avg" (NEVER "count")
+     * group_by MUST be ["Y"] (e.g., ["salary"], ["occupation"])
+     * Example: "Average Age by salary" → metric.column = "age", aggregation = "avg", group_by = ["salary"]
+   
+   - When title/insight says "Total X by Y" or "X by Y" where X is amount/revenue/sales:
+     * metric.column MUST be "X" (exact column name, e.g., "Amount", "Revenue", "Sales")
+     * metric.aggregation MUST be "sum" (not "count")
+     * Example: "Total Sales Amount by Country" → metric.column = "Amount" or "Sales", aggregation = "sum"
+   
+   - When title/insight mentions "Average", "Mean", "Per":
+     * metric.aggregation MUST be "avg" (not "count")
+     * metric.column MUST be the numeric column mentioned (e.g., "age", "education-num", "temperature")
+     * metric.column MUST be a continuous numeric column
+     * Example: "Average Age by Occupation" → metric.column = "Age", aggregation = "avg"
+   
+   - Count should ONLY be used when:
+     * Explicitly analyzing distribution (e.g., "Count of Products by Category")
+     * No numeric metric column exists
+     * analysis_type is "distribution"
+   
+   - DO NOT default to count for amounts/revenue/sales
+   - DO NOT use categorical columns as metrics
+   
+   - CRITICAL: DO NOT use year/time columns (e.g., "LaunchYear", "Year", "BirthYear") as metrics with sum/avg
+     * Years are time dimensions, NOT measurements
+     * You CANNOT sum or average years (e.g., "Total LaunchYear" is meaningless)
+     * Use years as grouping variables (e.g., "Count by LaunchYear", "Average Sales by Year")
+     * If you see a column like "LaunchYear", use it in group_by, NOT as metric.column
+     * Example: "Sales by LaunchYear" → group_by = ["LaunchYear"], metric.column = "Sales" (NOT "LaunchYear")
+
+7. Title generation: The title will be auto-generated from analyticalIntent
+   - If you specify "Average Age by Occupation", ensure:
+     * metric.column = "age"
+     * metric.aggregation = "avg"
+     * group_by = ["occupation"]
+   - If aggregation is "count", title should NOT say "Average" or "Total"
+   - Title will be auto-generated, so ensure metric and aggregation are correct
+
+7. For relationship charts (scatter plots):
+   - MUST include relationship_variables with independent and dependent
+   - These are the raw column names, not aggregated values
+   - Example: "Capital Gain vs Capital Loss"
+     * relationship_variables.independent = "capital-gain"
+     * relationship_variables.dependent = "capital-loss"
+     * chart_type = "scatter"
+
+The analyticalIntent is the CONTRACT between insight and visualization.
+Title, aggregation, and variables will be derived from it.
+If you change aggregation, the title will automatically update to match.
+`;
 
   const userPrompt = `Analyze this cleaned dataset as ${
     request.persona === "custom" && request.customPersona
@@ -419,19 +632,165 @@ Respond with ONLY the JSON object, no other text.`;
     parsed.dashboardViews = [];
   }
 
+  // Build column metadata (explicit types, not inferred)
+  const columnMetadata = buildColumnMetadata(headers, columnStats);
+
   // Strict schema checks: keep only known columns and valid chart types.
   const headerSet = new Set(headers.map((h) => (h || "").toLowerCase()));
-  parsed.dashboardViews = parsed.dashboardViews
+  let validatedViews = parsed.dashboardViews
     .filter((view: any) => view && typeof view === "object")
-    .map((view: any) => ({
+    .map((view: any) => {
+      // Extract or construct analytical intent
+      let intent: AnalyticalIntent | null = null;
+      
+      if (view.analyticalIntent) {
+        // Use provided intent from LLM
+        intent = view.analyticalIntent as AnalyticalIntent;
+        
+        // Normalize group_by to ensure it's always an array
+        if (intent && !Array.isArray(intent.group_by)) {
+          intent = {
+            ...intent,
+            group_by: intent.group_by ? [intent.group_by as any].flat() : []
+          };
+        }
+      } else {
+        // Fallback: Extract intent from title/variables (backward compatibility)
+        intent = extractIntentFromText(
+          view.purpose || view.title,
+          view.title,
+          view.variables || [],
+          view.aggregation || 'count',
+          view.chartType || 'bar',
+          columnMetadata
+        );
+      }
+      
+      // Validate analytical intent
+      if (intent) {
+        // CRITICAL: Fix metric binding BEFORE validation
+        // This prevents count from hijacking actual metric columns
+        const metricBinding = bindMetricColumn(
+          intent,
+          view.variables || [],
+          columnMetadata,
+          view.title,
+          view.purpose
+        );
+        
+        // Update intent with correct metric binding
+        intent = {
+          ...intent,
+          metric: {
+            ...intent.metric,
+            column: metricBinding.column,
+            aggregation: metricBinding.aggregation
+          }
+        };
+        
+        // Validate metric binding separately
+        const bindingValidation = validateMetricBinding(intent, columnMetadata, view.title);
+        if (!bindingValidation.isValid && bindingValidation.fixedMetric) {
+          console.warn('Metric binding validation failed, fixing:', bindingValidation.errors);
+          intent = {
+            ...intent,
+            metric: {
+              ...intent.metric,
+              column: bindingValidation.fixedMetric.column,
+              aggregation: bindingValidation.fixedMetric.aggregation as any
+            }
+          };
+        }
+        
+        const intentValidation = validateAnalyticalIntent(intent, columnMetadata, headers);
+        
+        if (!intentValidation.isValid) {
+          console.warn('Analytical intent validation failed:', intentValidation.errors);
+          
+          // Use fixed intent if available
+          if (intentValidation.fixedIntent) {
+            intent = intentValidation.fixedIntent;
+          }
+        }
+        
+        // CRITICAL: Regenerate title from intent to prevent drift and double words
+        const newTitle = generateTitleFromIntent(intent);
+        view.title = newTitle;
+        
+        // Update aggregation to match intent
+        view.aggregation = intent.metric.aggregation;
+        
+        // Update variables to match intent
+        const groupBy = Array.isArray(intent.group_by) ? intent.group_by : [];
+        if (groupBy.length > 0) {
+          view.variables = [groupBy[0], intent.metric.column];
+        } else if (intent.relationship_variables) {
+          view.variables = [intent.relationship_variables.independent, intent.relationship_variables.dependent];
+        } else {
+          // Ensure metric column is in variables
+          if (!view.variables.includes(intent.metric.column)) {
+            view.variables = [view.variables[0] || intent.metric.column, intent.metric.column];
+          }
+        }
+        
+        // Update chart type if changed
+        view.chartType = intent.chart_type;
+        
+        // Store validated intent for later use
+        view.analyticalIntent = intent;
+      }
+      
+      return {
       ...view,
       variables: Array.isArray(view.variables)
         ? view.variables.filter((v: string) => headerSet.has(String(v).toLowerCase()))
         : [],
       chartType: normalizeChartType(view.chartType),
       aggregation: normalizeAggregation(view.aggregation),
-    }))
+      };
+    })
     .filter((view: any) => view.variables.length >= 1);
+  
+  // Apply structural chart validation (title/axis consistency, etc.)
+  const validationResult = validateChartViews(validatedViews, headers, columnStats);
+  parsed.dashboardViews = validationResult.validViews;
+  
+  // Final pass: Ensure titles match analytical intent (prevent drift)
+  parsed.dashboardViews = parsed.dashboardViews.map((view: any) => {
+    if (view.analyticalIntent) {
+      const intent = view.analyticalIntent as AnalyticalIntent;
+      
+      // Regenerate title from intent to ensure consistency
+      const intentTitle = generateTitleFromIntent(intent);
+      
+      // Only update if current title doesn't match intent
+      const currentTitleLower = (view.title || '').toLowerCase();
+      const intentTitleLower = intentTitle.toLowerCase();
+      
+      // Check if aggregation in title matches intent
+      const hasAggregationMismatch = 
+        (intent.metric.aggregation === 'count' && (currentTitleLower.includes('average') || currentTitleLower.includes('avg'))) ||
+        (intent.metric.aggregation === 'avg' && !currentTitleLower.includes('average') && !currentTitleLower.includes('avg'));
+      
+      if (hasAggregationMismatch || !currentTitleLower.includes(intent.metric.column.toLowerCase())) {
+        view.title = intentTitle;
+        console.log(`Title regenerated from intent: "${view.title}" -> "${intentTitle}"`);
+      }
+      
+      // CRITICAL: Always derive axis labels from intent - never trust LLM-provided labels
+      // This ensures X/Y labels ALWAYS match what is actually displayed (any dataset, any domain)
+      const derived = deriveAxisLabels(view);
+      view.xAxisLabel = derived.xAxisLabel;
+      view.yAxisLabel = derived.yAxisLabel;
+    }
+    
+    return view;
+  });
+  
+  // Log invalid views for debugging
+  if (validationResult.invalidViews.length > 0) {
+    console.warn('Invalid chart views detected and fixed:', validationResult.invalidViews);
+  }
 
   if (parsed.dashboardViews.length < 4) {
     const existing = new Set(
